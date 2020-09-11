@@ -1,0 +1,258 @@
+---
+title: "NEFI Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    vertical_layout: scroll
+    theme: "cosmo"
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(gganimate)
+library(plotly)
+library(tidyverse)
+library(mongolite)
+library(exploratory)
+
+#connect to MongoDB
+dmd <- mongo(collection = "results",
+             url= "mongodb://openwhisk:ecoforecast2019@ecoforecast.bu.edu:27017/EcoForecastTest")
+
+model.name <- as.list(dmd$find(fields ='{"model_name":true}')[,2])
+models <- as.data.frame(dmd$find(fields ='{"model_name":true}'))
+
+```
+
+Full Forecast
+=======================================================================
+
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+```{r}
+selectInput("name", 
+            label = h3("Select Model Name"), 
+            choices = model.name)
+
+```
+
+```{r}
+
+model <- reactive(models[which(models$model_name == input$name),1])
+
+data.1 <- reactive({
+  
+model <- model()
+
+data <- list()
+
+for(i in 1:length(model)){
+
+data[[i]] <- dmd$find(query= paste0('{"_id":{"$oid":"', model[i],'"}}') , 
+                 fields = '{"result": 1, "_id":false}') %>% 
+  exploratory::clean_data_frame() %>% 
+  select(-c(result.logs.stderr, result.logs.stdout)) %>% 
+  rename(Observed = result.data.body.Observed, Lower = result.data.body.Lower,
+         Time = result.data.body.Time, Predicted = result.data.body.Predicted, 
+         Upper = result.data.body.Upper) %>% unnest() %>% 
+  mutate(Observed = as.numeric(Observed), Time = as.Date(Time)) %>% 
+  mutate(Year = as.factor(lubridate::year(Time)))
+
+id <- rep(i, times = dim(data[[i]])[1])
+data[[i]] <- cbind(data[[i]], id)
+
+}
+data
+})
+
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Forecast
+```{r}
+
+renderPlotly({
+
+data <- data.1()  
+model <- model()
+combo <- Reduce(function(x, y) merge(x, y, all=TRUE), data) %>% mutate(id = as.factor(id))
+y.up <- (max(combo$Upper) + 0.1 * (max(combo$Upper) - min(combo$Lower)))
+y.low <- (min(combo$Lower) - 0.1 * (max(combo$Upper) - min(combo$Lower)))
+m <- ggplot(combo, aes(group= id, ids = id, frame = id)) + 
+  geom_ribbon(aes(x = Time, ymin = Lower, ymax = Upper, fill = "95% Confidence Interval"), alpha = 0.4) + 
+  geom_line(aes(x = Time, y = Predicted, color = "Predicted"), size = 1) + 
+  geom_line(aes(x = Time, y = Observed, color = "Observed"), size = 1) + 
+  scale_fill_manual(name = "", labels = c("95% Confidence Interval"), values=c("95% Confidence Interval" = "blue1")) +
+  scale_color_manual(name = "Legend", labels = c("Predicted", "Observed"), values=c("Predicted" = "skyblue1", "Observed" = "firebrick4")) + 
+  scale_y_continuous(limits = c(y.low, y.up)) + 
+  #ggtitle(paste0("Forecast for ", input$name)) + 
+  theme_minimal() 
+
+if(length(model) > 1){
+m_plotly <- ggplotly(m, tooltip = 'all') %>% 
+  animation_opts(frame = 1200, easing = 'linear-in', transition = 0, redraw = T, mode = "next") %>% 
+  animation_slider(x = 0, y = -0.1, visible = T, currentvalue = list(prefix = "Forecast Date:", font = list(color = 'black'))) %>%
+  animation_button(x = 0, xanchor = "left", y = 1.5, yanchor= "top") %>% 
+  layout(legend = list(orientation = "h", x = 0.25, y = 1.1)) %>% 
+  layout(showlegend = T, margin = c(30,50,30,50)) } 
+
+if(length(model) == 1){
+  m_plotly <- ggplotly(m, tooltip = 'all')
+  
+}
+
+m_plotly$x$data[[1]]$name <-"95% Confidence Interval"
+m_plotly$x$data[[2]]$name <- "Predicted Mean"
+m_plotly$x$data[[3]]$name <- "Observed Data"
+
+m_plotly
+
+})
+
+
+```
+
+Partial Forecast
+=======================================================================
+
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+```{r}
+  dateRangeInput("dates", label = h3("Date range"))
+
+```
+
+
+
+Row
+-----------------------------------------------------------------------
+### Forecast
+```{r}
+
+renderPlotly({
+
+data <- data.1()
+model <- model()
+
+combo <- Reduce(function(x, y) merge(x, y, all=TRUE), data) %>% mutate(id = as.factor(id)) %>% filter(Time >= input$dates[1]) %>% filter(Time <= input$dates[2])
+
+y.up <- (max(combo$Upper) + 0.1 * (max(combo$Upper) - min(combo$Lower)))
+y.low <- (min(combo$Lower) - 0.1 * (max(combo$Upper) - min(combo$Lower)))
+m <- ggplot(combo, aes(group= id, ids = id, frame = id)) + 
+  geom_ribbon(aes(x = Time, ymin = Lower, ymax = Upper, fill = "95% Confidence Interval"), alpha = 0.4) + 
+  geom_line(aes(x = Time, y = Predicted, color = "Predicted"), size = 1) + 
+  geom_line(aes(x = Time, y = Observed, color = "Observed"), size = 1) + 
+  scale_fill_manual(name = "", labels = c("95% Confidence Interval"), values=c("95% Confidence Interval" = "blue1")) +
+  scale_color_manual(name = "Legend", labels = c("Predicted", "Observed"), values=c("Predicted" = "skyblue1", "Observed" = "firebrick4")) + 
+scale_y_continuous(limits = c(y.low, y.up)) + 
+
+  ggtitle(paste0("Forecast for ", input$name)) + 
+  theme_minimal() 
+
+if(length(model) > 1){
+m_plotly <- ggplotly(m, tooltip = 'all') %>% 
+  animation_opts(frame = 1200, easing = 'linear-in', transition = 0, redraw = T, mode = "next") %>% 
+  animation_slider(x = 0, y = -0.1, visible = T, currentvalue = list(prefix = "Forecast Date:", font = list(color = 'black'))) %>%
+  animation_button(x = 0, xanchor = "left", y = 1.5, yanchor= "top") %>% 
+  layout(legend = list(orientation = "h", x = 0.25, y = 1.1)) %>% 
+  layout(showlegend = T, margin = c(30,50,30,50)) } 
+
+if(length(model) == 1){
+  m_plotly <- ggplotly(m, tooltip = 'all')
+  
+}
+
+m_plotly$x$data[[1]]$name <-"95% Confidence Interval"
+m_plotly$x$data[[2]]$name <- "Predicted Mean"
+m_plotly$x$data[[3]]$name <- "Observed Data"
+
+m_plotly
+
+})
+
+
+```
+
+
+Forecast Horizon 
+=======================================================================
+
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+
+```{r}
+dateInput('date', label = "Date for Forecast Horizon", format = 'yyyy-mm-dd')
+```
+
+
+Row
+-----------------------------------------------------------------------
+###Forecast Horizon 
+```{r}
+renderPlot({
+
+data <- data.1()
+model <- model()
+
+if(length(model) > 1){
+
+sub <- combo <- Reduce(function(x, y) merge(x, y, all=TRUE), data) %>% mutate(id = as.factor(id)) %>% filter(Time == input$date) %>% arrange(id)
+y.up <- max(combo$Upper) + 0.1 * (max(combo$Upper) - min(combo$Lower))
+y.low <- (min(combo$Lower) - 0.1 * (max(combo$Upper) - min(combo$Lower)))
+ggplot(sub, aes(group = 1)) + 
+  geom_ribbon(aes(x = id, ymin = Lower, ymax = Upper, fill="95% Confidence Interval"), alpha = 0.4) + 
+  geom_line(aes(x = id, y = Predicted, color = "Predicted")) + 
+  geom_line(aes(x = id, y = Observed, color = "Observed")) + 
+  geom_hline(yintercept = mean(sub$Observed, na.rm = T)) + 
+  ggtitle(paste0("Forecast Horizon for ", input$name)) + 
+  scale_color_manual(name = "Legend", labels = c("Observed", "Predicted"), values=c("Observed" = "black", "Predicted" = "skyblue1")) +
+  scale_fill_manual(labels = c("95% Confidence Interval"), values=c("95% Confidence Interval" = "blue1")) + 
+  scale_y_continuous(limits = c(y.low, y.up)) + 
+  theme_minimal() + 
+  xlab("Run Number")
+
+}
+if(length(model) <= 1){
+  
+  print("Forecast Horizon is only available for reoccuring forecast")
+}
+
+})
+
+```
+
+
+Observed Vs Predicted
+=======================================================================
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+```{r}
+dateRangeInput("dates1", h3("Date range"))
+
+```
+
+Row
+-----------------------------------------------------------------------
+
+###Observed vs Predicted Values 
+```{r}
+renderPlotly({
+
+data <- data.1()
+model <- model()
+
+combo <- Reduce(function(x, y) merge(x, y, all=TRUE), data) %>% mutate(id = as.factor(id)) %>% filter(Time >= input$dates1[1]) %>% filter(Time <= input$dates1[2])
+
+  r <- ggplot(combo, aes(x = Predicted, y = Observed, group = 1)) + 
+  geom_point(aes(color = id)) + 
+  geom_abline(slope = 1, intercept = 0)
+
+ggplotly(r)
+})
+```
+
+
+
