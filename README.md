@@ -1,1 +1,1 @@
-# Shiny-Apps
+# R Shiny apps for forecast visualization
